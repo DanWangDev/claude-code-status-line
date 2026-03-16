@@ -1,5 +1,7 @@
 # Claude Code Status Line
 
+[English](README.md) | [中文](README_zh.md)
+
 A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that shows your working directory, git branch, model name, and **Anthropic API rate limit usage** — right in the terminal.
 
 ![status line example](https://img.shields.io/badge/status_line-~/project_|_main_|_Opus_4.6_|_5h:23%25-blue?style=flat-square)
@@ -9,7 +11,7 @@ A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude
 ```
 ~/my-project  | main  | Claude 4.6 Opus  | 5h:23% | ↺ 3h42m  | 7d:8% | ↺ 5d12h0m
 ```
-
+![Screenshot](screenshot.png)
 | Segment | Description |
 |---------|-------------|
 | `~/my-project` | Shortened working directory |
@@ -19,7 +21,6 @@ A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude
 | `↺ 3h42m` | Time until 5-hour limit resets |
 | `7d:8%` | 7-day rate limit utilization |
 | `↺ 5d12h0m` | Time until 7-day limit resets |
-
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
