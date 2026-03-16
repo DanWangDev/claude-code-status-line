@@ -56,10 +56,10 @@ async function getUsage() {
   if (!token) return null;
 
   const data = await fetchUsage(token);
-  if (data) {
+  if (data && !data.error) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify({ fetchedAt: Date.now(), data }));
   }
-  return data;
+  return data?.error ? null : data;
 }
 
 async function main() {
