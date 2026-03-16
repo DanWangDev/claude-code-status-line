@@ -30,7 +30,23 @@ A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude
 
 ## Installation
 
-### Quick install
+### Plugin install (recommended)
+
+Install as a Claude Code plugin — no git clone needed:
+
+```
+/install-plugin https://github.com/DanWangDev/claude-code-status-line
+```
+
+Then run the setup command inside Claude Code:
+
+```
+/setup-statusline
+```
+
+This copies the scripts to `~/.claude/` and configures `settings.json` automatically.
+
+### Shell install
 
 ```bash
 git clone https://github.com/DanWangDev/claude-code-status-line.git

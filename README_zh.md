@@ -32,7 +32,23 @@
 
 ## 安装指南
 
-### 快速安装
+### 插件安装（推荐）
+
+作为 Claude Code 插件安装，无需 git clone：
+
+```
+/install-plugin https://github.com/DanWangDev/claude-code-status-line
+```
+
+然后在 Claude Code 中运行配置命令：
+
+```
+/setup-statusline
+```
+
+会自动将脚本复制到 `~/.claude/` 并配置 `settings.json`。
+
+### 脚本安装
 
 ```bash
 git clone https://github.com/DanWangDev/claude-code-status-line.git

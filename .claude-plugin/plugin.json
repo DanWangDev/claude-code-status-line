@@ -1,0 +1,7 @@
+{
+  "name": "claude-code-status-line",
+  "description": "Custom status line showing directory, git branch, model name, and API rate limit usage with reset timers",
+  "author": {
+    "name": "DanWangDev"
+  }
+}

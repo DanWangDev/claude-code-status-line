@@ -1,0 +1,30 @@
+{
+  "name": "claude-code-status-line",
+  "owner": {
+    "name": "DanWangDev"
+  },
+  "metadata": {
+    "description": "Custom status line for Claude Code showing directory, git branch, model, and API rate limit usage"
+  },
+  "plugins": [
+    {
+      "name": "claude-code-status-line",
+      "source": "./",
+      "description": "Custom status line showing directory, git branch, model name, and Anthropic API rate limit usage with reset timers",
+      "author": {
+        "name": "DanWangDev"
+      },
+      "homepage": "https://github.com/DanWangDev/claude-code-status-line",
+      "repository": "https://github.com/DanWangDev/claude-code-status-line",
+      "license": "MIT",
+      "keywords": [
+        "statusline",
+        "status-bar",
+        "rate-limit",
+        "git-branch",
+        "productivity"
+      ],
+      "category": "productivity"
+    }
+  ]
+}
