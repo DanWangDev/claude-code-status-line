@@ -38,8 +38,10 @@ function formatReset(isoString) {
   const diffMs = new Date(isoString) - Date.now();
   if (diffMs <= 0) return '0m';
   const totalMins = Math.round(diffMs / 60000);
-  const h = Math.floor(totalMins / 60);
+  const d = Math.floor(totalMins / 1440);
+  const h = Math.floor((totalMins % 1440) / 60);
   const m = totalMins % 60;
+  if (d > 0) return `${d}d${h}h${m}m`;
   return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
