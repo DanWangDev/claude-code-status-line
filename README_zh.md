@@ -2,12 +2,15 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-专为 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 打造的自定义状态栏，可以直接在终端中显示您的工作目录、Git分支、模型名称以及 **Claude Code 订阅额度使用情况**。
+专为 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 打造的自定义状态栏，可以直接在终端中显示您的工作目录、Git分支、模型名称以及 **API 用量统计**。
+
+支持 **Anthropic**（额度限制、OAuth）和 **第三方服务商**（如 DeepSeek：实时余额、月度费用、Claude 等效价格对比）。
 
 ![status line example](https://img.shields.io/badge/status_line-~/project_|_main_|_Opus_4.6_|_5h:23%25-blue?style=flat-square)
 
 ## 外观展示
 
+**Anthropic：**
 ```
 ~/my-project  | main  | Claude 4.6 Opus  | 5h:23% | ↺ 3h42m  | 7d:8% | ↺ 5d12h0m
 ```
@@ -23,12 +26,25 @@
 | `7d:8%` | 7天额度使用率 |
 | `↺ 5d12h0m` | 7天额度重置的剩余时间 |
 
+**DeepSeek（第三方）：**
+```
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.84  | $7.89 opus
+```
+| 字段 | 说明 |
+|---------|-------------|
+| `~/my-project` | 当前工作目录 |
+| `deepseek-v4-pro[1m]` | 当前激活的模型名称 |
+| `¥47.71` | DeepSeek 实时余额（每分钟从 API 获取） |
+| `¥0.84` | 月度费用（人民币），基于 token 用量 × DeepSeek 定价 |
+| `$7.89 opus` | 相同 token 量在 Claude Opus 上的等效费用（用于对比） |
+
 ## 环境要求
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
 - Node.js (用于 JSON 解析和 API 调用)
 - Bash (Windows 环境请使用 Git Bash)
-- Claude Pro/Max 订阅 (用于访问 API 使用情况的接口)
+- Anthropic：Claude Pro/Max 订阅（用于访问 API 使用情况的接口）
+- DeepSeek：在 `settings.json` 中配置 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_BASE_URL`
 
 ## 安装指南
 
@@ -87,21 +103,26 @@ chmod +x ~/.claude/statusline-command.sh
 
 Claude Code 会通过标准输入 (stdin) 将一段 JSON 数据传递给状态栏命令。该 JSON 包含 `cwd`、`model`、`context_window` 和 `cost` 等字段。
 
-**`statusline-command.sh`** 是入口点 —— 它读取 JSON，提取工作目录和 git 分支，然后委托 `statusline-parse.js` 获取模型名称和速率限制信息。
+**`statusline-command.sh`** 是入口点 —— 它读取 JSON，提取工作目录和 git 分支，然后委托 `statusline-parse.js` 获取模型名称和用量信息。
 
-**`statusline-parse.js`** 解析 JSON 并从 Anthropic OAuth 接口获取您的 API 使用情况。使用数据会缓存在 `~/.claude/usage-cache.json` 中，有效期为 5 分钟，以避免过度调用 API。
+**`statusline-parse.js`** 解析 JSON 并通过 `ANTHROPIC_BASE_URL` 环境变量自动检测服务商：
+
+- **Anthropic：** 从 OAuth 接口 (`api.anthropic.com/api/oauth/usage`) 获取额度使用率。缓存 5 分钟。
+- **DeepSeek：** 从 DeepSeek API (`api.deepseek.com/user/balance`) 获取实时余额。缓存 1 分钟。月度费用通过累积 `context_window.total_input_tokens` 和 `context_window.total_output_tokens` 的增量，乘以 DeepSeek 人民币原生定价计算得出。同时用相同的 token 量计算 Claude Opus 的等效费用用于对比。
+
+月度追踪数据保存在 `~/.claude/deepseek-usage.json`，每月自动重置。
 
 ### 支持的字段
 
 解析器支持以下字段（作为参数传递）：
 
-| 字段 | 输出内容 |
-|-------|--------|
-| `model` | 模型显示名称 |
-| `limit` | 5小时和7天额度使用率 + 重置时间 |
-| `ctx` | 上下文窗口使用率百分比 |
-| `cost` | 会话成本 (美元) |
-| `cwd` | 工作目录路径 |
+| 字段 | Anthropic 输出 | DeepSeek 输出 |
+|-------|-----------------|-----------------|
+| `model` | 模型显示名称 | 模型显示名称 |
+| `limit` | 5小时/7天额度使用率 + 重置时间 | 余额 + 月度费用 + Claude 等效对比 |
+| `ctx` | 上下文窗口使用率百分比 | 上下文窗口使用率百分比 |
+| `cost` | 会话成本 (美元) | 会话成本 (美元) |
+| `cwd` | 工作目录路径 | 工作目录路径 |
 
 ## 自定义修改
 
@@ -130,13 +151,38 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10分钟
 
 **状态栏为空 (没有内容显示):**
 - 确保 Node.js 已添加到系统 PATH 中
-- 检查 `~/.claude/.credentials.json` 是否存在 (需要先登录 Claude Code)
+- Anthropic：检查 `~/.claude/.credentials.json` 是否存在 (需要先登录 Claude Code)
+- DeepSeek：检查 `settings.json` 中是否配置了 `ANTHROPIC_AUTH_TOKEN`
 - 尝试手动执行排查错误：`echo '{"cwd":"/tmp","model":{"display_name":"test"}}' | bash ~/.claude/statusline-command.sh`
 
-**未显示额度使用情况:**
+**未显示额度使用情况 (Anthropic):**
 - 需要有 Claude Pro 或 Max 订阅
 - `~/.claude/.credentials.json` 中的 OAuth 令牌必须有效
 - 检查缓存文件 `~/.claude/usage-cache.json` 是否被正常创建
+
+**未显示余额或月度费用 (DeepSeek):**
+- 确认 `settings.json` 中 `ANTHROPIC_BASE_URL` 包含 `deepseek`
+- 检查 `ANTHROPIC_AUTH_TOKEN` 是否已设置且有效
+- 直接测试余额 API：`curl -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" https://api.deepseek.com/user/balance`
+- 月度追踪从零开始，在当前月内不会立即匹配 DeepSeek 控制台的数据，需要累积多个会话
+
+**月度费用与 DeepSeek 控制台不一致:**
+- 追踪器从安装状态栏时开始记录，不包含之前的会话历史
+- 输入缓存命中与未命中按相同价格计算（保守估计），因为累积 token 总计不区分两者
+- 到下个自然月时，两者同时重置，数据会趋于一致
+
+## DeepSeek 定价
+
+解析器使用 DeepSeek `deepseek-v4-pro` 的人民币原生 token 定价（75% 折扣，有效期至 2026-05-31）：
+
+| | 输入 (缓存未命中) | 输出 |
+|---|---|---|
+| 折扣价 | ¥3/百万 token | ¥6/百万 token |
+| 标准价 | ¥12/百万 token | ¥24/百万 token |
+
+Claude Opus 对比使用 Anthropic 官方定价（$15/百万 token 输入，$75/百万 token 输出）。
+
+如需更新定价（例如折扣到期或更换模型），请编辑 `statusline-parse.js` 中的 `DS_PRICING_CNY` 和 `OPUS_PRICING` 常量。
 
 ## 许可
 
