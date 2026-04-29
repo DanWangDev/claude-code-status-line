@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-
-// Claude Code Status Line - JSON parser & API usage fetcher
-// Parses the status line JSON from Claude Code and fetches rate limit info.
-
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -11,7 +7,14 @@ const https = require('https');
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CREDS_FILE = path.join(CLAUDE_DIR, '.credentials.json');
 const CACHE_FILE = path.join(CLAUDE_DIR, 'usage-cache.json');
+const DEEPSEEK_TRACKER_FILE = path.join(CLAUDE_DIR, 'deepseek-usage.json');
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function detectProvider() {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL || '';
+  if (baseUrl.includes('deepseek')) return 'deepseek';
+  return 'anthropic';
+}
 
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return null; }
@@ -45,9 +48,98 @@ function formatReset(isoString) {
   return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
-async function getUsage() {
+function fetchDeepSeekBalance(apiKey) {
+  return new Promise((resolve) => {
+    const req = https.request(
+      'https://api.deepseek.com/user/balance',
+      { headers: { 'Authorization': `Bearer ${apiKey}` } },
+      (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.setTimeout(4000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+// DeepSeek v4-pro native CNY pricing per 1M tokens (discounted 75% until 2026-05-31)
+// Standard rates: input ¥12, output ¥24
+const DS_PRICING_CNY = { input: 3, output: 6 };
+// Anthropic Opus pricing per 1M tokens (USD)
+const OPUS_PRICING = { input: 15, output: 75 };
+
+function trackDeepSeekMonthly(j) {
+  const inputTokens = j?.context_window?.total_input_tokens || 0;
+  const outputTokens = j?.context_window?.total_output_tokens || 0;
+
+  let t = readJson(DEEPSEEK_TRACKER_FILE) || { month: '', inTok: 0, outTok: 0, lastIn: 0, lastOut: 0 };
+  const currentMonth = new Date().toISOString().substring(0, 7);
+
+  if (t.month !== currentMonth) {
+    t = { month: currentMonth, inTok: 0, outTok: 0, lastIn: 0, lastOut: 0 };
+  }
+
+  const inDelta = inputTokens - t.lastIn;
+  const outDelta = outputTokens - t.lastOut;
+  if (inDelta > 0) t.inTok += inDelta;
+  if (outDelta > 0) t.outTok += outDelta;
+  t.lastIn = inputTokens;
+  t.lastOut = outputTokens;
+
+  try { fs.writeFileSync(DEEPSEEK_TRACKER_FILE, JSON.stringify(t)); } catch {}
+
+  // Return monthly totals: DS in native CNY, Opus in USD
+  const dsCny = (t.inTok / 1_000_000) * DS_PRICING_CNY.input + (t.outTok / 1_000_000) * DS_PRICING_CNY.output;
+  const opusUsd = (t.inTok / 1_000_000) * OPUS_PRICING.input + (t.outTok / 1_000_000) * OPUS_PRICING.output;
+  return { dsCny, opusUsd };
+}
+
+async function getBalance() {
   const cache = readJson(CACHE_FILE);
-  if (cache && (Date.now() - cache.fetchedAt) < CACHE_TTL_MS) {
+  // Balance cached for 1 minute (fresher for "real-time" feel)
+  if (cache && cache.provider === 'deepseek' && cache.balance && (Date.now() - cache.fetchedAt) < 60000) {
+    return cache.balance;
+  }
+
+  const apiKey = process.env.ANTHROPIC_AUTH_TOKEN;
+  if (!apiKey) return null;
+
+  const balance = await fetchDeepSeekBalance(apiKey);
+  if (balance) {
+    // Preserve existing cache keys (for Anthropic path) and merge balance
+    const existing = readJson(CACHE_FILE) || {};
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ ...existing, fetchedAt: Date.now(), provider: 'deepseek', balance }));
+  }
+  return balance;
+}
+
+function formatDeepSeekStatus(j, balance) {
+  const { dsCny, opusUsd } = trackDeepSeekMonthly(j);
+
+  if (balance?.balance_infos?.length) {
+    const infos = balance.balance_infos;
+    const info = infos.find(i => parseFloat(i.total_balance) > 0) || infos[0];
+    const symbol = info.currency === 'USD' ? '$' : '¥';
+    return `| ${symbol}${info.total_balance}  | ¥${dsCny.toFixed(2)}  | $${opusUsd.toFixed(2)} opus`;
+  }
+  return '';
+}
+
+async function getUsage(j) {
+  const provider = detectProvider();
+
+  // DeepSeek: balance (cached 1min) + live session costs
+  if (provider === 'deepseek') {
+    const balance = await getBalance();
+    return formatDeepSeekStatus(j, balance);
+  }
+
+  // Anthropic: OAuth usage API (cached 5min)
+  const cache = readJson(CACHE_FILE);
+  if (cache && cache.provider === 'anthropic' && (Date.now() - cache.fetchedAt) < CACHE_TTL_MS) {
     return cache.data;
   }
 
@@ -57,7 +149,7 @@ async function getUsage() {
 
   const data = await fetchUsage(token);
   if (data && !data.error) {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ fetchedAt: Date.now(), data }));
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ fetchedAt: Date.now(), provider: 'anthropic', data }));
   }
   return data?.error ? null : data;
 }
@@ -83,8 +175,12 @@ async function main() {
         const cost = j.cost?.total_cost_usd;
         val = cost != null ? '$' + cost.toFixed(2) : '';
       } else if (field === 'limit') {
-        const u = await getUsage();
-        if (u) {
+        const u = await getUsage(j);
+        if (typeof u === 'string') {
+          // DeepSeek / other providers return pre-formatted string
+          val = u;
+        } else if (u) {
+          // Anthropic returns raw data object
           const fiveH = u.five_hour;
           const sevenD = u.seven_day;
           const parts = [];

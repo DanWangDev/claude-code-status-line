@@ -2,12 +2,15 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that shows your working directory, git branch, model name, and **Anthropic API rate limit usage** — right in the terminal.
+A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that shows your working directory, git branch, model name, and **API usage stats** — right in the terminal.
+
+Supports both **Anthropic** (rate limits, OAuth) and **3rd-party providers** like DeepSeek (live balance, monthly cost, Claude-equivalent pricing comparison).
 
 ![status line example](https://img.shields.io/badge/status_line-~/project_|_main_|_Opus_4.6_|_5h:23%25-blue?style=flat-square)
 
 ## What it looks like
 
+**Anthropic:**
 ```
 ~/my-project  | main  | Claude 4.6 Opus  | 5h:23% | ↺ 3h42m  | 7d:8% | ↺ 5d12h0m
 ```
@@ -21,12 +24,25 @@ A custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude
 | `↺ 3h42m` | Time until 5-hour limit resets |
 | `7d:8%` | 7-day rate limit utilization |
 | `↺ 5d12h0m` | Time until 7-day limit resets |
+
+**DeepSeek (3rd-party):**
+```
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.84  | $7.89 opus
+```
+| Segment | Description |
+|---------|-------------|
+| `~/my-project` | Shortened working directory |
+| `deepseek-v4-pro[1m]` | Active model name |
+| `¥47.71` | Live DeepSeek balance (fetched from API every 1 min) |
+| `¥0.84` | Monthly expenses in CNY (tracked from token counts × DeepSeek pricing) |
+| `$7.89 opus` | What the same tokens would cost on Claude Opus (for comparison) |
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
 - Node.js (for the JSON parser and API calls)
 - Bash (Git Bash on Windows)
-- A Claude Pro/Max subscription (for API usage endpoint access)
+- Anthropic: A Claude Pro/Max subscription (for API usage endpoint access)
+- DeepSeek: An API key configured via `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` in `settings.json`
 
 ## Installation
 
@@ -87,19 +103,24 @@ Claude Code passes a JSON blob to the status line command via stdin. The JSON co
 
 **`statusline-command.sh`** is the entry point — it reads the JSON, extracts the working directory and git branch, then delegates to `statusline-parse.js` for model name and rate limit info.
 
-**`statusline-parse.js`** parses the JSON and fetches your API usage from the Anthropic OAuth endpoint. Usage data is cached for 5 minutes at `~/.claude/usage-cache.json` to avoid excessive API calls.
+**`statusline-parse.js`** parses the JSON and detects the provider from the `ANTHROPIC_BASE_URL` environment variable:
+
+- **Anthropic:** Fetches API rate limit usage from the OAuth endpoint (`api.anthropic.com/api/oauth/usage`). Cached for 5 minutes.
+- **DeepSeek:** Fetches live balance from the DeepSeek API (`api.deepseek.com/user/balance`). Cached for 1 minute. Monthly expenses are tracked locally by accumulating token deltas from `context_window.total_input_tokens` and `context_window.total_output_tokens`, multiplied by DeepSeek's native CNY pricing. A Claude Opus cost equivalent is computed from the same token counts for comparison.
+
+Monthly tracking data persists in `~/.claude/deepseek-usage.json` and auto-resets on month rollover.
 
 ### Available fields
 
 The parser supports these fields (pass as argument):
 
-| Field | Output |
-|-------|--------|
-| `model` | Model display name |
-| `limit` | 5h and 7d rate limit utilization + reset time |
-| `ctx` | Context window usage percentage |
-| `cost` | Session cost in USD |
-| `cwd` | Working directory path |
+| Field | Anthropic output | DeepSeek output |
+|-------|-----------------|-----------------|
+| `model` | Model display name | Model display name |
+| `limit` | 5h/7d rate limit % + reset time | Balance + monthly cost + Claude equivalent |
+| `ctx` | Context window usage % | Context window usage % |
+| `cost` | Session cost in USD | Session cost in USD |
+| `cwd` | Working directory path | Working directory path |
 
 ## Customization
 
@@ -128,13 +149,37 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 **Status line is blank:**
 - Make sure Node.js is in your PATH
-- Check that `~/.claude/.credentials.json` exists (you need to be logged in to Claude Code)
+- Check that `~/.claude/.credentials.json` exists (Anthropic) or `ANTHROPIC_AUTH_TOKEN` is set in `settings.json` (DeepSeek)
 - Try running manually: `echo '{"cwd":"/tmp","model":{"display_name":"test"}}' | bash ~/.claude/statusline-command.sh`
 
-**Rate limits not showing:**
+**Rate limits not showing (Anthropic):**
 - You need a Claude Pro or Max subscription
 - The OAuth token in `~/.claude/.credentials.json` must be valid
 - Check if the cache file `~/.claude/usage-cache.json` is being created
+
+**Balance or monthly cost not showing (DeepSeek):**
+- Verify `ANTHROPIC_BASE_URL` contains `deepseek` in your `settings.json`
+- Check that `ANTHROPIC_AUTH_TOKEN` is set and valid
+- Test the balance API directly: `curl -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" https://api.deepseek.com/user/balance`
+- Monthly tracking starts from zero — it won't match the DeepSeek dashboard for the current month until it accumulates sessions
+
+**Monthly cost doesn't match DeepSeek dashboard:**
+- The tracker started when you installed the status line — it doesn't have historical sessions from before that
+- Input cache hits are priced the same as cache misses (conservative estimate) since cumulative token totals don't distinguish them
+- Numbers will converge at the start of a new month when both reset
+
+## DeepSeek pricing
+
+The parser uses DeepSeek's native CNY per-token pricing for `deepseek-v4-pro` (discounted 75% until 2026-05-31):
+
+| | Input (cache miss) | Output |
+|---|---|---|
+| Discounted | ¥3/M | ¥6/M |
+| Standard | ¥12/M | ¥24/M |
+
+The Claude Opus comparison uses Anthropic's published rates ($15/M input, $75/M output).
+
+To update pricing (e.g., after the discount expires or for a different model), edit the `DS_PRICING_CNY` and `OPUS_PRICING` constants in `statusline-parse.js`.
 
 ## License
 
