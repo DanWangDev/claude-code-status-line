@@ -28,15 +28,16 @@
 
 **DeepSeek（第三方）：**
 ```
-~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.76  | $0.75 opus5
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥3.12 h87%  | $4.56 opus5
 ```
 | 字段 | 说明 |
 |---------|-------------|
 | `~/my-project` | 当前工作目录 |
 | `deepseek-v4-pro[1m]` | 当前激活的模型名称 |
 | `¥47.71` | DeepSeek 实时余额（每分钟从 API 获取） |
-| `¥0.76` | 月度费用（人民币），基于 token 用量 × DeepSeek 定价 |
-| `$0.75 opus5` | 相同 token 量在 Claude Opus 5 上的等效费用（用于对比） |
+| `¥3.12` | 当月实际费用，来自 DeepSeek 控制台（缓存 5 分钟） |
+| `h87%` | 当月输入 token 的缓存命中占比（来自控制台） |
+| `$4.56 opus5` | 相同月度 token 量在 Claude Opus 5 上的等效费用（假设性对比） |
 
 ## 环境要求
 
@@ -44,7 +45,7 @@
 - Node.js (用于 JSON 解析和 API 调用)
 - Bash (Windows 环境请使用 Git Bash)
 - Anthropic：Claude Pro/Max 订阅（用于访问 API 使用情况的接口）
-- DeepSeek：在 `settings.json` 中配置 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_BASE_URL`
+- DeepSeek：在 `settings.json` 中配置 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_BASE_URL`；如需显示真实费用和缓存命中率，还需配置平台会话令牌（见下文）
 
 ## 安装指南
 
@@ -108,9 +109,9 @@ Claude Code 会通过标准输入 (stdin) 将一段 JSON 数据传递给状态�
 **`statusline-parse.js`** 解析 JSON 并通过 `ANTHROPIC_BASE_URL` 环境变量自动检测服务商：
 
 - **Anthropic：** 从 OAuth 接口 (`api.anthropic.com/api/oauth/usage`) 获取额度使用率。缓存 5 分钟。
-- **DeepSeek：** 从 DeepSeek API (`api.deepseek.com/user/balance`) 获取实时余额。缓存 1 分钟。月度费用通过累积 `context_window.total_input_tokens` 和 `context_window.total_output_tokens` 的增量，乘以 DeepSeek 人民币原生定价（峰谷均价，见下文）计算得出。同时用相同的 token 量计算 Claude Opus 5 的等效费用用于对比。
+- **DeepSeek：** 从 DeepSeek API (`api.deepseek.com/user/balance`) 获取实时余额。缓存 1 分钟。当月实际费用和缓存命中/未命中 token 数来自 DeepSeek 控制台的私有用量接口（`platform.deepseek.com/api/v0/usage/cost` 和 `/usage/amount`），使用平台会话令牌认证 —— 与控制台显示的数字一致。缓存 5 分钟。Claude Opus 5 等效费用基于真实的月度 token 量计算（假设性对比 —— 这些请求从未发给 Anthropic）。
 
-月度追踪数据保存在 `~/.claude/deepseek-usage.json`，每月自动重置。
+未配置平台令牌或会话过期（认证码 40002/40003）时，费用相关片段自动隐藏，余额始终显示。
 
 ### 支持的字段
 
@@ -160,31 +161,34 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10分钟
 - `~/.claude/.credentials.json` 中的 OAuth 令牌必须有效
 - 检查缓存文件 `~/.claude/usage-cache.json` 是否被正常创建
 
-**未显示余额或月度费用 (DeepSeek):**
+**未显示余额或费用 (DeepSeek):**
 - 确认 `settings.json` 中 `ANTHROPIC_BASE_URL` 包含 `deepseek`
 - 检查 `ANTHROPIC_AUTH_TOKEN` 是否已设置且有效
 - 直接测试余额 API：`curl -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" https://api.deepseek.com/user/balance`
-- 月度追踪从零开始，在当前月内不会立即匹配 DeepSeek 控制台的数据，需要累积多个会话
+- 费用片段需要平台会话令牌（见下文）。未配置或过期时，只显示余额
 
-**月度费用与 DeepSeek 控制台不一致:**
-- 追踪器从安装状态栏时开始记录，不包含之前的会话历史
-- 输入缓存命中按未命中价格计算（¥4.5–9.0/百万，而非 ¥0.15–0.30/百万），因此估算会偏高 —— 累积 token 总计无法区分命中与未命中
-- 到下个自然月时，两者同时重置，数据会趋于一致
+## 从 DeepSeek 控制台获取真实用量数据
 
-## DeepSeek 定价
+DeepSeek 没有官方的用量 API，但控制台的私有接口会返回真实的月度费用和缓存命中/未命中 token 数。状态栏使用你的浏览器会话令牌调用这些接口：
 
-解析器使用 DeepSeek V4-Pro 的人民币原生 token 定价。自 2026-08-17 起 DeepSeek 采用峰谷分时定价（北京时间）：
+```
+GET https://platform.deepseek.com/api/v0/usage/cost?month=8&year=2026
+GET https://platform.deepseek.com/api/v0/usage/amount?month=8&year=2026
+Authorization: Bearer <userToken>
+```
 
-| 时段 | 输入 (缓存命中) | 输入 (缓存未命中) | 输出 |
-|---|---|---|---|
-| 高峰（9:00–12:00、14:00–18:00，每天 7 小时） | ¥0.30/百万 | ¥9.0/百万 | ¥27.0/百万 |
-| 空闲（每天 17 小时） | ¥0.15/百万 | ¥4.5/百万 | ¥13.5/百万 |
+**获取令牌（只需一次）：** 在 Chrome 中打开 [platform.deepseek.com](https://platform.deepseek.com) → DevTools (F12) → Application → Local Storage → `userToken` 条目是 JSON 包装（`{"value":"...","__version":"0"}`）—— 只需复制内层的 `value` 字符串，然后二选一：
 
-月度 token 总量没有时间戳，因此状态栏采用按时间加权的 24 小时均价（输入未命中 ¥5.8125/百万，输出 ¥17.4375/百万），并将缓存命中按未命中价格计算（偏保守）。
+- 保存到文件：`echo "<token>" > ~/.claude/deepseek-platform-token`，或
+- 在 `settings.json` 的 `env` 块中设置为 `DEEPSEEK_PLATFORM_TOKEN`。
 
-Claude 对比使用 Claude Opus 5 官方定价（$5/百万 token 输入，$25/百万 token 输出）。
+环境变量 `DEEPSEEK_PLATFORM_TOKEN` 优先，文件作为后备。两者都只保存在你的本机，不会进入仓库。
 
-如需更新定价，请编辑 `statusline-parse.js` 中的 `DS_PRICING_PEAK`、`DS_PRICING_OFFPEAK`、`DS_PEAK_HOURS` 和 `OPUS_PRICING` 常量。
+注意事项：
+
+- 这些是私有、未公开的接口，可能随时变动。
+- 令牌是浏览器会话凭证，偶尔会过期 —— DeepSeek 以认证码 `40002`/`40003` 拒绝请求，此时费用片段自动隐藏，重新粘贴令牌即可恢复。
+- `opus5` 片段属于假设性对比（这些请求从未发给 Anthropic）：输入按 Claude Opus 5 的缓存感知价格计算（命中 × $0.50/百万缓存读取价，未命中 × $5/百万，输出 × $25/百万）。
 
 ## 许可
 

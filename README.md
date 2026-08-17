@@ -27,22 +27,23 @@ Supports both **Anthropic** (rate limits, OAuth) and **3rd-party providers** lik
 
 **DeepSeek (3rd-party):**
 ```
-~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.76  | $0.75 opus5
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥3.12 h87%  | $4.56 opus5
 ```
 | Segment | Description |
 |---------|-------------|
 | `~/my-project` | Shortened working directory |
 | `deepseek-v4-pro[1m]` | Active model name |
 | `¥47.71` | Live DeepSeek balance (fetched from API every 1 min) |
-| `¥0.76` | Monthly expenses in CNY (tracked from token counts × DeepSeek pricing) |
-| `$0.75 opus5` | What the same tokens would cost on Claude Opus 5 (for comparison) |
+| `¥3.12` | Real month-to-date cost from the DeepSeek console (cached 5 min) |
+| `h87%` | Cache-hit share of input tokens this month (from the console) |
+| `$4.56 opus5` | What the same monthly tokens would cost on Claude Opus 5 (hypothetical comparison) |
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
 - Node.js (for the JSON parser and API calls)
 - Bash (Git Bash on Windows)
 - Anthropic: A Claude Pro/Max subscription (for API usage endpoint access)
-- DeepSeek: An API key configured via `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` in `settings.json`
+- DeepSeek: An API key configured via `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` in `settings.json`; a platform session token (see below) for the real cost/hit-rate figures
 
 ## Installation
 
@@ -106,9 +107,9 @@ Claude Code passes a JSON blob to the status line command via stdin. The JSON co
 **`statusline-parse.js`** parses the JSON and detects the provider from the `ANTHROPIC_BASE_URL` environment variable:
 
 - **Anthropic:** Fetches API rate limit usage from the OAuth endpoint (`api.anthropic.com/api/oauth/usage`). Cached for 5 minutes.
-- **DeepSeek:** Fetches live balance from the DeepSeek API (`api.deepseek.com/user/balance`). Cached for 1 minute. Monthly expenses are tracked locally by accumulating token deltas from `context_window.total_input_tokens` and `context_window.total_output_tokens`, multiplied by DeepSeek's native CNY pricing (peak/off-peak blended average, see below). A Claude Opus 5 cost equivalent is computed from the same token counts for comparison.
+- **DeepSeek:** Fetches live balance from the DeepSeek API (`api.deepseek.com/user/balance`). Cached for 1 minute. Month-to-date cost and cache hit/miss token counts come from the DeepSeek console's private usage endpoints (`platform.deepseek.com/api/v0/usage/cost` and `/usage/amount`) using a platform session token — the same numbers the console shows. Cached for 5 minutes. A Claude Opus 5 cost equivalent is computed from the real monthly token counts (hypothetical comparison — those prompts never went to Anthropic).
 
-Monthly tracking data persists in `~/.claude/deepseek-usage.json` and auto-resets on month rollover.
+Cost segments are hidden when no platform token is configured or the session has expired (auth codes 40002/40003); the balance segment always shows.
 
 ### Available fields
 
@@ -157,31 +158,34 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 - The OAuth token in `~/.claude/.credentials.json` must be valid
 - Check if the cache file `~/.claude/usage-cache.json` is being created
 
-**Balance or monthly cost not showing (DeepSeek):**
+**Balance or cost not showing (DeepSeek):**
 - Verify `ANTHROPIC_BASE_URL` contains `deepseek` in your `settings.json`
 - Check that `ANTHROPIC_AUTH_TOKEN` is set and valid
 - Test the balance API directly: `curl -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" https://api.deepseek.com/user/balance`
-- Monthly tracking starts from zero — it won't match the DeepSeek dashboard for the current month until it accumulates sessions
+- Cost segments need the platform session token — see below. Without it (or after it expires), only the balance shows
 
-**Monthly cost doesn't match DeepSeek dashboard:**
-- The tracker started when you installed the status line — it doesn't have historical sessions from before that
-- Input cache hits are priced at the cache-miss rate (¥4.5–9.0/M instead of ¥0.15–0.30/M), so the estimate skews higher — cumulative token totals don't distinguish hits from misses
-- Numbers will converge at the start of a new month when both reset
+## Real usage data from the DeepSeek console
 
-## DeepSeek pricing
+DeepSeek has no official usage API, but the console's private endpoints return the real per-month cost and cache hit/miss token counts. The status line calls them with your browser-session token:
 
-The parser uses DeepSeek's V4-Pro pricing in CNY per 1M tokens. Since 2026-08-17 DeepSeek uses a peak/off-peak scheme (Beijing time):
+```
+GET https://platform.deepseek.com/api/v0/usage/cost?month=8&year=2026
+GET https://platform.deepseek.com/api/v0/usage/amount?month=8&year=2026
+Authorization: Bearer <userToken>
+```
 
-| Slot | Input (cache hit) | Input (cache miss) | Output |
-|---|---|---|---|
-| Peak (9:00–12:00, 14:00–18:00; 7h/day) | ¥0.30/M | ¥9.0/M | ¥27.0/M |
-| Off-peak (17h/day) | ¥0.15/M | ¥4.5/M | ¥13.5/M |
+**Get your token once:** open [platform.deepseek.com](https://platform.deepseek.com) in Chrome → DevTools (F12) → Application → Local Storage → the `userToken` entry is a JSON wrapper (`{"value":"...","__version":"0"}`) — copy only the inner `value` string, then either:
 
-Monthly token totals aren't timestamped, so the status line estimates cost with a time-weighted 24h average (¥5.8125/M input miss, ¥17.4375/M output) and prices cache hits at the miss rate (conservative).
+- save it to a file: `echo "<token>" > ~/.claude/deepseek-platform-token`, or
+- set it in `settings.json`'s `env` block as `DEEPSEEK_PLATFORM_TOKEN`.
 
-The Claude comparison uses Claude Opus 5 rates ($5/M input, $25/M output).
+The `DEEPSEEK_PLATFORM_TOKEN` env var takes precedence; the file is the fallback. Either way it stays on your machine and never enters the repo.
 
-To update pricing, edit the `DS_PRICING_PEAK`, `DS_PRICING_OFFPEAK`, `DS_PEAK_HOURS`, and `OPUS_PRICING` constants in `statusline-parse.js`.
+Caveats:
+
+- These are private, undocumented endpoints and may change without notice.
+- The token is a browser session credential and expires occasionally — DeepSeek rejects it with auth codes `40002`/`40003`, and the cost segments hide themselves until you re-paste the token.
+- The `opus5` segment is a hypothetical comparison, since those prompts were never sent to Anthropic: input is priced cache-aware at Claude Opus 5 rates (hits × $0.50/M cache-read, misses × $5/M, output × $25/M).
 
 ## License
 

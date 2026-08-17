@@ -7,8 +7,14 @@ const https = require('https');
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CREDS_FILE = path.join(CLAUDE_DIR, '.credentials.json');
 const CACHE_FILE = path.join(CLAUDE_DIR, 'usage-cache.json');
-const DEEPSEEK_TRACKER_FILE = path.join(CLAUDE_DIR, 'deepseek-usage.json');
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// DeepSeek platform (console) session — private, undocumented endpoints.
+// Token sources: DEEPSEEK_PLATFORM_TOKEN env, else ~/.claude/deepseek-platform-token.
+const PLATFORM_HOST = 'https://platform.deepseek.com';
+const PLATFORM_TOKEN_FILE = path.join(CLAUDE_DIR, 'deepseek-platform-token');
+const PLATFORM_CACHE_FILE = path.join(CLAUDE_DIR, 'platform-usage-cache.json');
+const PLATFORM_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 function detectProvider() {
   const baseUrl = process.env.ANTHROPIC_BASE_URL || '';
@@ -65,44 +71,113 @@ function fetchDeepSeekBalance(apiKey) {
   });
 }
 
-// DeepSeek V4-Pro pricing in CNY per 1M tokens (effective 2026-08-17):
-// peak/off-peak scheme — peak = 9:00–12:00 & 14:00–18:00 Beijing time (7h/day), off-peak = half price.
-// Cache hits are priced as misses (conservative) since cumulative token totals don't distinguish them.
-const DS_PEAK_HOURS = 7;
-const DS_PRICING_PEAK = { input: 9.0, output: 27.0 };
-const DS_PRICING_OFFPEAK = { input: 4.5, output: 13.5 };
-// Blended 24h average used for monthly estimates
-const DS_PRICING_CNY = {
-  input: (DS_PRICING_OFFPEAK.input * (24 - DS_PEAK_HOURS) + DS_PRICING_PEAK.input * DS_PEAK_HOURS) / 24,
-  output: (DS_PRICING_OFFPEAK.output * (24 - DS_PEAK_HOURS) + DS_PRICING_PEAK.output * DS_PEAK_HOURS) / 24,
-};
-// Claude Opus 5 pricing per 1M tokens (USD)
-const OPUS_PRICING = { input: 5, output: 25 };
+// Claude Opus 5 pricing per 1M tokens (USD) — hypothetical comparison only.
+// cacheRead = prompt-cache read rate (10% of input), applied to DeepSeek cache hits.
+const OPUS_PRICING = { input: 5, output: 25, cacheRead: 0.5 };
 
-function trackDeepSeekMonthly(j) {
-  const inputTokens = j?.context_window?.total_input_tokens || 0;
-  const outputTokens = j?.context_window?.total_output_tokens || 0;
+// --- DeepSeek platform (console) usage ---
 
-  let t = readJson(DEEPSEEK_TRACKER_FILE) || { month: '', inTok: 0, outTok: 0, lastIn: 0, lastOut: 0 };
-  const currentMonth = new Date().toISOString().substring(0, 7);
+function readPlatformToken() {
+  const envToken = (process.env.DEEPSEEK_PLATFORM_TOKEN || '').trim();
+  if (envToken) return envToken;
+  try {
+    const fileToken = fs.readFileSync(PLATFORM_TOKEN_FILE, 'utf8').trim();
+    return fileToken || null;
+  } catch { return null; }
+}
 
-  if (t.month !== currentMonth) {
-    t = { month: currentMonth, inTok: 0, outTok: 0, lastIn: 0, lastOut: 0 };
+function fetchPlatformEndpoint(pathname, token) {
+  return new Promise((resolve) => {
+    const req = https.request(
+      PLATFORM_HOST + pathname,
+      { headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' } },
+      (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          let json = null;
+          try { json = JSON.parse(body); } catch {}
+          resolve({ status: res.statusCode, json });
+        });
+      }
+    );
+    req.on('error', () => resolve({ status: 0, json: null }));
+    req.setTimeout(4000, () => { req.destroy(); resolve({ status: 0, json: null }); });
+    req.end();
+  });
+}
+
+// 40002/40003 are DeepSeek's expired-session codes (per CodexBar's provider docs).
+function isPlatformAuthFailure(res) {
+  if (res.status === 401 || res.status === 403) return true;
+  const code = res.json?.code ?? res.json?.data?.biz_code;
+  return code === 40002 || code === 40003;
+}
+
+// Month boundaries follow the console, which displays Beijing time.
+function getBeijingMonth() {
+  const bj = new Date(Date.now() + 8 * 3600 * 1000);
+  return { year: bj.getUTCFullYear(), month: bj.getUTCMonth() + 1 };
+}
+
+function sumUsageAmounts(entries, typePredicate) {
+  let total = 0;
+  for (const entry of entries || []) {
+    for (const item of entry?.usage || []) {
+      if (typePredicate(item?.type || '')) total += parseFloat(item?.amount) || 0;
+    }
+  }
+  return total;
+}
+
+function parsePlatformUsage(costRes, amountRes) {
+  const costBiz = costRes?.json?.data?.biz_data;
+  const amountBiz = amountRes?.json?.data?.biz_data;
+  if (!costBiz && !amountBiz) return null;
+
+  // usage/cost: biz_data is an array of per-currency entries
+  let mtdCost = null;
+  let currency = 'CNY';
+  const costItems = Array.isArray(costBiz) ? costBiz : [];
+  const costEntry = costItems.find(e => e?.currency === 'CNY') || costItems[0];
+  if (costEntry) {
+    currency = costEntry.currency || 'CNY';
+    const total = sumUsageAmounts(costEntry.total, () => true);
+    if (total > 0) mtdCost = total;
   }
 
-  const inDelta = inputTokens - t.lastIn;
-  const outDelta = outputTokens - t.lastOut;
-  if (inDelta > 0) t.inTok += inDelta;
-  if (outDelta > 0) t.outTok += outDelta;
-  t.lastIn = inputTokens;
-  t.lastOut = outputTokens;
+  // usage/amount: biz_data.total[].usage[] keyed by type string
+  const amountTotals = amountBiz?.total || [];
+  const hitTokens = sumUsageAmounts(amountTotals, t => /cache.?hit/i.test(t));
+  const missTokens = sumUsageAmounts(amountTotals, t => /cache.?miss/i.test(t));
+  const outTokens = sumUsageAmounts(amountTotals, t => /response|completion|output/i.test(t));
 
-  try { fs.writeFileSync(DEEPSEEK_TRACKER_FILE, JSON.stringify(t)); } catch {}
+  return { mtdCost, currency, hitTokens, missTokens, outTokens };
+}
 
-  // Return monthly totals: DS in native CNY, Opus in USD
-  const dsCny = (t.inTok / 1_000_000) * DS_PRICING_CNY.input + (t.outTok / 1_000_000) * DS_PRICING_CNY.output;
-  const opusUsd = (t.inTok / 1_000_000) * OPUS_PRICING.input + (t.outTok / 1_000_000) * OPUS_PRICING.output;
-  return { dsCny, opusUsd };
+async function getPlatformUsage() {
+  const cache = readJson(PLATFORM_CACHE_FILE);
+  if (cache?.summary && cache.fetchedAt && (Date.now() - cache.fetchedAt) < PLATFORM_CACHE_TTL_MS) {
+    return cache.summary;
+  }
+
+  const token = readPlatformToken();
+  if (!token) return null;
+
+  const { year, month } = getBeijingMonth();
+  const qs = `?month=${month}&year=${year}`;
+  const [costRes, amountRes] = await Promise.all([
+    fetchPlatformEndpoint(`/api/v0/usage/cost${qs}`, token),
+    fetchPlatformEndpoint(`/api/v0/usage/amount${qs}`, token),
+  ]);
+  if (isPlatformAuthFailure(costRes) || isPlatformAuthFailure(amountRes)) return null;
+
+  const summary = parsePlatformUsage(costRes, amountRes);
+  if (summary && (summary.mtdCost != null || summary.hitTokens + summary.missTokens + summary.outTokens > 0)) {
+    try { fs.writeFileSync(PLATFORM_CACHE_FILE, JSON.stringify({ fetchedAt: Date.now(), summary })); } catch {}
+    return summary;
+  }
+  return null;
 }
 
 async function getBalance() {
@@ -124,25 +199,40 @@ async function getBalance() {
   return balance;
 }
 
-function formatDeepSeekStatus(j, balance) {
-  const { dsCny, opusUsd } = trackDeepSeekMonthly(j);
+async function getDeepSeekStatus() {
+  const [balance, usage] = await Promise.all([getBalance(), getPlatformUsage()]);
 
+  let s = '';
   if (balance?.balance_infos?.length) {
     const infos = balance.balance_infos;
     const info = infos.find(i => parseFloat(i.total_balance) > 0) || infos[0];
     const symbol = info.currency === 'USD' ? '$' : '¥';
-    return `| ${symbol}${info.total_balance}  | ¥${dsCny.toFixed(2)}  | $${opusUsd.toFixed(2)} opus5`;
+    s += `| ${symbol}${info.total_balance}  `;
   }
-  return '';
+  if (usage) {
+    const inTokens = usage.hitTokens + usage.missTokens;
+    if (usage.mtdCost != null) {
+      const symbol = usage.currency === 'USD' ? '$' : '¥';
+      s += `| ${symbol}${usage.mtdCost.toFixed(2)}`;
+      if (inTokens > 0) s += ` h${Math.round((usage.hitTokens / inTokens) * 100)}%`;
+      s += '  ';
+    }
+    if (inTokens + usage.outTokens > 0) {
+      const opusUsd = (usage.missTokens / 1_000_000) * OPUS_PRICING.input
+        + (usage.hitTokens / 1_000_000) * OPUS_PRICING.cacheRead
+        + (usage.outTokens / 1_000_000) * OPUS_PRICING.output;
+      s += `| $${opusUsd.toFixed(2)} opus5`;
+    }
+  }
+  return s;
 }
 
 async function getUsage(j) {
   const provider = detectProvider();
 
-  // DeepSeek: balance (cached 1min) + live session costs
+  // DeepSeek: balance (cached 1min) + real console usage (cached 5min)
   if (provider === 'deepseek') {
-    const balance = await getBalance();
-    return formatDeepSeekStatus(j, balance);
+    return getDeepSeekStatus();
   }
 
   // Anthropic: OAuth usage API (cached 5min)
