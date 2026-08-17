@@ -27,15 +27,15 @@ Supports both **Anthropic** (rate limits, OAuth) and **3rd-party providers** lik
 
 **DeepSeek (3rd-party):**
 ```
-~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.84  | $7.89 opus
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.76  | $0.75 opus5
 ```
 | Segment | Description |
 |---------|-------------|
 | `~/my-project` | Shortened working directory |
 | `deepseek-v4-pro[1m]` | Active model name |
 | `¥47.71` | Live DeepSeek balance (fetched from API every 1 min) |
-| `¥0.84` | Monthly expenses in CNY (tracked from token counts × DeepSeek pricing) |
-| `$7.89 opus` | What the same tokens would cost on Claude Opus (for comparison) |
+| `¥0.76` | Monthly expenses in CNY (tracked from token counts × DeepSeek pricing) |
+| `$0.75 opus5` | What the same tokens would cost on Claude Opus 5 (for comparison) |
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
@@ -106,7 +106,7 @@ Claude Code passes a JSON blob to the status line command via stdin. The JSON co
 **`statusline-parse.js`** parses the JSON and detects the provider from the `ANTHROPIC_BASE_URL` environment variable:
 
 - **Anthropic:** Fetches API rate limit usage from the OAuth endpoint (`api.anthropic.com/api/oauth/usage`). Cached for 5 minutes.
-- **DeepSeek:** Fetches live balance from the DeepSeek API (`api.deepseek.com/user/balance`). Cached for 1 minute. Monthly expenses are tracked locally by accumulating token deltas from `context_window.total_input_tokens` and `context_window.total_output_tokens`, multiplied by DeepSeek's native CNY pricing. A Claude Opus cost equivalent is computed from the same token counts for comparison.
+- **DeepSeek:** Fetches live balance from the DeepSeek API (`api.deepseek.com/user/balance`). Cached for 1 minute. Monthly expenses are tracked locally by accumulating token deltas from `context_window.total_input_tokens` and `context_window.total_output_tokens`, multiplied by DeepSeek's native CNY pricing (peak/off-peak blended average, see below). A Claude Opus 5 cost equivalent is computed from the same token counts for comparison.
 
 Monthly tracking data persists in `~/.claude/deepseek-usage.json` and auto-resets on month rollover.
 
@@ -165,21 +165,23 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 **Monthly cost doesn't match DeepSeek dashboard:**
 - The tracker started when you installed the status line — it doesn't have historical sessions from before that
-- Input cache hits are priced the same as cache misses (conservative estimate) since cumulative token totals don't distinguish them
+- Input cache hits are priced at the cache-miss rate (¥4.5–9.0/M instead of ¥0.15–0.30/M), so the estimate skews higher — cumulative token totals don't distinguish hits from misses
 - Numbers will converge at the start of a new month when both reset
 
 ## DeepSeek pricing
 
-The parser uses DeepSeek's native CNY per-token pricing for `deepseek-v4-pro` (discounted 75% until 2026-05-31):
+The parser uses DeepSeek's V4-Pro pricing in CNY per 1M tokens. Since 2026-08-17 DeepSeek uses a peak/off-peak scheme (Beijing time):
 
-| | Input (cache miss) | Output |
-|---|---|---|
-| Discounted | ¥3/M | ¥6/M |
-| Standard | ¥12/M | ¥24/M |
+| Slot | Input (cache hit) | Input (cache miss) | Output |
+|---|---|---|---|
+| Peak (9:00–12:00, 14:00–18:00; 7h/day) | ¥0.30/M | ¥9.0/M | ¥27.0/M |
+| Off-peak (17h/day) | ¥0.15/M | ¥4.5/M | ¥13.5/M |
 
-The Claude Opus comparison uses Anthropic's published rates ($15/M input, $75/M output).
+Monthly token totals aren't timestamped, so the status line estimates cost with a time-weighted 24h average (¥5.8125/M input miss, ¥17.4375/M output) and prices cache hits at the miss rate (conservative).
 
-To update pricing (e.g., after the discount expires or for a different model), edit the `DS_PRICING_CNY` and `OPUS_PRICING` constants in `statusline-parse.js`.
+The Claude comparison uses Claude Opus 5 rates ($5/M input, $25/M output).
+
+To update pricing, edit the `DS_PRICING_PEAK`, `DS_PRICING_OFFPEAK`, `DS_PEAK_HOURS`, and `OPUS_PRICING` constants in `statusline-parse.js`.
 
 ## License
 

@@ -65,11 +65,19 @@ function fetchDeepSeekBalance(apiKey) {
   });
 }
 
-// DeepSeek v4-pro native CNY pricing per 1M tokens (discounted 75% until 2026-05-31)
-// Standard rates: input ¥12, output ¥24
-const DS_PRICING_CNY = { input: 3, output: 6 };
-// Anthropic Opus pricing per 1M tokens (USD)
-const OPUS_PRICING = { input: 15, output: 75 };
+// DeepSeek V4-Pro pricing in CNY per 1M tokens (effective 2026-08-17):
+// peak/off-peak scheme — peak = 9:00–12:00 & 14:00–18:00 Beijing time (7h/day), off-peak = half price.
+// Cache hits are priced as misses (conservative) since cumulative token totals don't distinguish them.
+const DS_PEAK_HOURS = 7;
+const DS_PRICING_PEAK = { input: 9.0, output: 27.0 };
+const DS_PRICING_OFFPEAK = { input: 4.5, output: 13.5 };
+// Blended 24h average used for monthly estimates
+const DS_PRICING_CNY = {
+  input: (DS_PRICING_OFFPEAK.input * (24 - DS_PEAK_HOURS) + DS_PRICING_PEAK.input * DS_PEAK_HOURS) / 24,
+  output: (DS_PRICING_OFFPEAK.output * (24 - DS_PEAK_HOURS) + DS_PRICING_PEAK.output * DS_PEAK_HOURS) / 24,
+};
+// Claude Opus 5 pricing per 1M tokens (USD)
+const OPUS_PRICING = { input: 5, output: 25 };
 
 function trackDeepSeekMonthly(j) {
   const inputTokens = j?.context_window?.total_input_tokens || 0;
@@ -123,7 +131,7 @@ function formatDeepSeekStatus(j, balance) {
     const infos = balance.balance_infos;
     const info = infos.find(i => parseFloat(i.total_balance) > 0) || infos[0];
     const symbol = info.currency === 'USD' ? '$' : '¥';
-    return `| ${symbol}${info.total_balance}  | ¥${dsCny.toFixed(2)}  | $${opusUsd.toFixed(2)} opus`;
+    return `| ${symbol}${info.total_balance}  | ¥${dsCny.toFixed(2)}  | $${opusUsd.toFixed(2)} opus5`;
   }
   return '';
 }

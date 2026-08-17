@@ -28,15 +28,15 @@
 
 **DeepSeek（第三方）：**
 ```
-~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.84  | $7.89 opus
+~/my-project  | deepseek-v4-pro[1m]  | ¥47.71  | ¥0.76  | $0.75 opus5
 ```
 | 字段 | 说明 |
 |---------|-------------|
 | `~/my-project` | 当前工作目录 |
 | `deepseek-v4-pro[1m]` | 当前激活的模型名称 |
 | `¥47.71` | DeepSeek 实时余额（每分钟从 API 获取） |
-| `¥0.84` | 月度费用（人民币），基于 token 用量 × DeepSeek 定价 |
-| `$7.89 opus` | 相同 token 量在 Claude Opus 上的等效费用（用于对比） |
+| `¥0.76` | 月度费用（人民币），基于 token 用量 × DeepSeek 定价 |
+| `$0.75 opus5` | 相同 token 量在 Claude Opus 5 上的等效费用（用于对比） |
 
 ## 环境要求
 
@@ -108,7 +108,7 @@ Claude Code 会通过标准输入 (stdin) 将一段 JSON 数据传递给状态�
 **`statusline-parse.js`** 解析 JSON 并通过 `ANTHROPIC_BASE_URL` 环境变量自动检测服务商：
 
 - **Anthropic：** 从 OAuth 接口 (`api.anthropic.com/api/oauth/usage`) 获取额度使用率。缓存 5 分钟。
-- **DeepSeek：** 从 DeepSeek API (`api.deepseek.com/user/balance`) 获取实时余额。缓存 1 分钟。月度费用通过累积 `context_window.total_input_tokens` 和 `context_window.total_output_tokens` 的增量，乘以 DeepSeek 人民币原生定价计算得出。同时用相同的 token 量计算 Claude Opus 的等效费用用于对比。
+- **DeepSeek：** 从 DeepSeek API (`api.deepseek.com/user/balance`) 获取实时余额。缓存 1 分钟。月度费用通过累积 `context_window.total_input_tokens` 和 `context_window.total_output_tokens` 的增量，乘以 DeepSeek 人民币原生定价（峰谷均价，见下文）计算得出。同时用相同的 token 量计算 Claude Opus 5 的等效费用用于对比。
 
 月度追踪数据保存在 `~/.claude/deepseek-usage.json`，每月自动重置。
 
@@ -168,21 +168,23 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10分钟
 
 **月度费用与 DeepSeek 控制台不一致:**
 - 追踪器从安装状态栏时开始记录，不包含之前的会话历史
-- 输入缓存命中与未命中按相同价格计算（保守估计），因为累积 token 总计不区分两者
+- 输入缓存命中按未命中价格计算（¥4.5–9.0/百万，而非 ¥0.15–0.30/百万），因此估算会偏高 —— 累积 token 总计无法区分命中与未命中
 - 到下个自然月时，两者同时重置，数据会趋于一致
 
 ## DeepSeek 定价
 
-解析器使用 DeepSeek `deepseek-v4-pro` 的人民币原生 token 定价（75% 折扣，有效期至 2026-05-31）：
+解析器使用 DeepSeek V4-Pro 的人民币原生 token 定价。自 2026-08-17 起 DeepSeek 采用峰谷分时定价（北京时间）：
 
-| | 输入 (缓存未命中) | 输出 |
-|---|---|---|
-| 折扣价 | ¥3/百万 token | ¥6/百万 token |
-| 标准价 | ¥12/百万 token | ¥24/百万 token |
+| 时段 | 输入 (缓存命中) | 输入 (缓存未命中) | 输出 |
+|---|---|---|---|
+| 高峰（9:00–12:00、14:00–18:00，每天 7 小时） | ¥0.30/百万 | ¥9.0/百万 | ¥27.0/百万 |
+| 空闲（每天 17 小时） | ¥0.15/百万 | ¥4.5/百万 | ¥13.5/百万 |
 
-Claude Opus 对比使用 Anthropic 官方定价（$15/百万 token 输入，$75/百万 token 输出）。
+月度 token 总量没有时间戳，因此状态栏采用按时间加权的 24 小时均价（输入未命中 ¥5.8125/百万，输出 ¥17.4375/百万），并将缓存命中按未命中价格计算（偏保守）。
 
-如需更新定价（例如折扣到期或更换模型），请编辑 `statusline-parse.js` 中的 `DS_PRICING_CNY` 和 `OPUS_PRICING` 常量。
+Claude 对比使用 Claude Opus 5 官方定价（$5/百万 token 输入，$25/百万 token 输出）。
+
+如需更新定价，请编辑 `statusline-parse.js` 中的 `DS_PRICING_PEAK`、`DS_PRICING_OFFPEAK`、`DS_PEAK_HOURS` 和 `OPUS_PRICING` 常量。
 
 ## 许可
 
